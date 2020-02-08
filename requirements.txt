@@ -1,0 +1,7 @@
+beautifulsoup4
+requests
+torch
+numpy
+bpemb
+tensorboardX
+scipy
