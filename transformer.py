@@ -21,9 +21,9 @@ class MultiHeadAttention(nn.Module):
         self.d_q = self.d_k
         self.d_v = d_v
         self.masked = masked
-        self.key_head_weights = [nn.Linear(self.d_model, self.d_k, bias=False) for _ in range(num_heads)]
-        self.query_head_weights = [nn.Linear(self.d_model, self.d_q, bias=False) for _ in range(num_heads)]
-        self.value_head_weights = [nn.Linear(self.d_model, self.d_v, bias=False) for _ in range(num_heads)]
+        self.key_head_weights = nn.ModuleList([nn.Linear(self.d_model, self.d_k, bias=False) for _ in range(num_heads)])
+        self.query_head_weights = nn.ModuleList([nn.Linear(self.d_model, self.d_q, bias=False) for _ in range(num_heads)])
+        self.value_head_weights = nn.ModuleList([nn.Linear(self.d_model, self.d_v, bias=False) for _ in range(num_heads)])
         self.w_o = nn.Linear(self.num_heads*self.d_v, self.d_model, bias=False)
         self.layer_norm = nn.LayerNorm(self.d_model)
 
@@ -55,7 +55,8 @@ class MultiHeadAttention(nn.Module):
         return output
 
     def generate_masks(self, max_seq_len):
-        mask = torch.ones(max_seq_len, max_seq_len)
+        device = next(self.w_o.parameters()).device
+        mask = torch.ones(max_seq_len, max_seq_len, device=device)
         for i in range(max_seq_len):
             mask[i, i + 1:] = 0.
         return mask
