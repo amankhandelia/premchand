@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from transformer import LanguageModelTransformer
+
 class PremchandLanguageModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim):
 
@@ -51,3 +53,32 @@ class PremchandLanguageModel(nn.Module):
         model = cls(vocab_size, embedding_dim, hidden_dim)
         model.load_state_dict(torch.load(model_path))
         return model
+
+
+class PremchandTransformerLM(nn.Module):
+    def __init__(self, d_model, d_ff, num_heads, vocab_size, num_layers = 1):
+        super(PremchandTransformerLM, self).__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.num_heads = num_heads
+        self.vocab_size = vocab_size
+        self.embeddings = nn.Embedding(self.vocab_size, self.d_model)
+        self.transformers = nn.ModuleList()
+        for i in range(num_layers):
+            self.transformers.append(LanguageModelTransformer(self.d_model, self.d_ff, self.num_heads))
+        self.vocab_projection = nn.Linear(self.d_model, self.vocab_size, bias=False)
+
+    def forward(self, source):
+        """
+        @param source[torch.Tensor]: A tensor of torch.int type, where each element represents index of a token.
+                                    Shape of Tensor should be [batch_size, max_seq_len]
+
+        @returns probs[torch.Tensor]: A tensor of probabilties
+        """
+
+        src_emb = self.embeddings(source)  # [batch_size, max_seq_len, d_model]
+        for transformer in self.transformers:
+            src_emb = transformer(src_emb) # [batch_size, max_seq_len, d_model]
+        output = self.vocab_projection(src_emb)  # [batch_size, max_seq_len, vocab_size]
+        probs = F.log_softmax(output, dim=-1)  # [batch_size, max_seq_len, vocab_size]
+        return probs
