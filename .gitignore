@@ -1,0 +1,6 @@
+venv
+static.json
+*.ipynb
+scrapper.py
+.idea
+__pycache__
