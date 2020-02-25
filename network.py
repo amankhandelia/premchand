@@ -82,3 +82,10 @@ class PremchandTransformerLM(nn.Module):
         output = self.vocab_projection(src_emb)  # [batch_size, max_seq_len, vocab_size]
         probs = F.log_softmax(output, dim=-1)  # [batch_size, max_seq_len, vocab_size]
         return probs
+
+    @classmethod
+    def load_model(cls, model_path, d_model, d_ff, num_heads, vocab_size, num_layers):
+        model = cls(d_model, d_ff, num_heads, vocab_size, num_layers)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        return model

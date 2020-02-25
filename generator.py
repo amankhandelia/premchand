@@ -6,7 +6,7 @@ import numpy as np
 
 from scipy.special import softmax
 from vocab import HindiVocab
-from network import PremchandLanguageModel
+from network import PremchandLanguageModel, PremchandTransformerLM
 
 
 
@@ -20,6 +20,8 @@ class TextGenerator:
         self.vocab = vocab
         self.strategy = strategy
         self.top_n = top_n
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model.to(self.device)
         self.model.eval()
 
     def sample_token(self, distribution):
@@ -41,6 +43,27 @@ class TextGenerator:
             choices = [item[0] for item in top_n_dist]
             token = np.random.choice(choices, p=distribution)
         return int(token)
+
+    def generate_text_from_transformers(self, generate_n, prime_text=None):
+        sampled_tokens = []
+        with torch.no_grad():
+            if prime_text is not None:
+                original = prime_text
+                tokens = self.vocab.encode(original)
+            else:
+                token = random.randint(0, self.vocab.vocab_size - 1)
+                tokens = [token]
+                original = self.vocab.decode(tokens)
+            tokens = torch.tensor(tokens, dtype=torch.long, device=self.device)
+            for i in range(generate_n):
+                probs = self.model(tokens.unsqueeze(0))
+                token = self.sample_token(probs.squeeze(dim=0)[-1].numpy())
+                sampled_tokens.append(token)
+                tokens = torch.cat([tokens, torch.tensor([token], dtype=torch.long, device=self.device)])
+                print(self.vocab.decode(tokens))
+
+        generated_text = self.vocab.decode(sampled_tokens)
+        return original, generated_text
 
     def generate_text(self, generate_n, prime_text=None, temperature=0.8):
         """
@@ -77,7 +100,25 @@ class TextGenerator:
         return original, generated_text
 
     @classmethod
-    def get_generator(cls, model_path, vocab_size, emb_dim, hidden_dim, strategy='argmax', top_n=1):
+    def get_generator_lstm(cls, model_path, vocab_size, emb_dim, hidden_dim, strategy='argmax', top_n=1):
         model = PremchandLanguageModel.load_model(model_path, vocab_size, emb_dim, hidden_dim)
         vocab = HindiVocab.from_bpemb(vocab_size=vocab_size)
-        return cls(model, vocab, strategy='argmax', top_n=1)
+        return cls(model, vocab, strategy=strategy, top_n=top_n)
+
+    @classmethod
+    def get_generator_transformer(cls, model_path, d_model, d_ff, num_heads, vocab_size, num_layers, strategy='argmax', top_n=1):
+        model = PremchandTransformerLM.load_model(model_path, d_model, d_ff, num_heads, vocab_size, num_layers)
+        vocab = HindiVocab.from_bpemb(vocab_size=vocab_size)
+        return cls(model, vocab, strategy=strategy, top_n=top_n)
+
+if __name__ == '__main__':
+    model_path = '/home/aman/Downloads/model_0074.pth'
+    num_layers = 2
+    d_model = 256
+    d_ff = 256
+    num_heads = 4
+    vocab_size = 10000
+    generator = TextGenerator.get_generator_transformer(model_path, d_model, d_ff, num_heads, vocab_size, num_layers)
+    text = 'जब गाँव के सारे आदमी गाँव'
+    next_n = 10
+    print(generator.generate_text_from_transformers(next_n, text))
