@@ -4,3 +4,4 @@ static.json
 scrapper.py
 .idea
 __pycache__
+.venv310

@@ -5,3 +5,5 @@ numpy
 bpemb
 tensorboardX
 scipy
+histr
+einops
