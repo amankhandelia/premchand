@@ -1,22 +1,51 @@
 import csv
+import logging
 from typing import Dict, Optional, Tuple
 
 import jax
-from jax import lax
-from jax import pmap
 import jax.numpy as jnp
+from jax import lax, pmap
+
+import numpy as np
 import optax
 import torch
+
 from einops import rearrange
+
 from flax import jax_utils
 from flax import linen as nn
+from flax.core.scope import FrozenVariableDict
 from flax.training.train_state import TrainState
+
 from histr import Shabdansh
+
 from jax_smi import initialise_tracking
 
 from mingpt.train import GraphemeVocab
 
 MAX_FIELD_SIZE = 100000000  # 100 MB
+EXPERIMENT_LABEL = "test_run_2"
+
+# Set up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Define log format
+formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+
+# Define file handler
+file_handler = logging.FileHandler(f"gpt_jax_{EXPERIMENT_LABEL}.log")
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+
+# Define console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+
+# Add handlers to logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 
 class Head(nn.Module):
@@ -162,6 +191,30 @@ class GPTLanguageModel(nn.Module):
         return logits
 
 
+def generate(model: nn.Module, params: FrozenVariableDict, idx: jnp.ndarray, max_new_tokens: int):
+    # idx is (B, T) array of indices in the current context
+    for _ in range(max_new_tokens):
+        idx_cond = idx[:, -block_size:]
+
+        # get the predictions
+        logits = model.apply(params, idx_cond, rngs={"dropout": dropout_rng})
+
+        # focus only on the last time step
+        logits = logits[:, -1, :]  # becomes (B, C)
+
+        # apply softmax to get probabilities
+        probs = jax.nn.softmax(logits, axis=-1)  # (B, C)
+        probs = np.asarray(probs)
+
+        # sample from the distribution
+        idx_next = np.random.choice(range(probs.shape[-1]), p=probs.ravel())
+        idx_next = rearrange(jnp.array(idx_next), "->1 1")
+
+        # append sampled index to the running sequence
+        idx = jnp.concatenate([idx, idx_next], axis=1)  # (B, T+1)
+    return idx
+
+
 def loss_fn(logits, targets):
     if targets is None:
         loss = None
@@ -267,7 +320,7 @@ x, _ = get_batch("train", data_dict, block_size, batch_size)
 params = gpt.init(rngs, x)
 
 parameter_count = sum(x.size for x in jax.tree_util.tree_leaves(params)) / 1e6
-print(f"Number of parameters (in millions): {parameter_count}")
+logger.info(f"Number of parameters (in millions): {parameter_count}")
 
 
 state = TrainState.create(apply_fn=gpt.apply, params=params, tx=optax.adamw(learning_rate))
@@ -276,16 +329,17 @@ loss = float("inf")
 
 p_update = jax.pmap(update, axis_name="batch")
 for iter in range(max_iters):
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        print(f"step {iter}: train loss {jnp.mean(loss):.4f}")
-
     # sample a batch of data
     xb, yb = get_batch("train", data_dict, block_size, batch_size, for_pmap=True)
 
     # evaluate the loss
     loss, state = p_update(state, xb, yb)
 
+    # every once in a while evaluate the loss on train and val sets
+    if iter % eval_interval == 0 or iter == max_iters - 1:
+        logger.info(f"step {iter}: train loss {jnp.mean(loss):.4f}")
+        context = jnp.zeros((1, 1), dtype=jnp.int32)
+        print(decode(generate(gpt, jax_utils.unreplicate(state).params, context, max_new_tokens=500)[0].tolist()))
 
 # if __name__ == "__main__":
 #     determinstic = False
