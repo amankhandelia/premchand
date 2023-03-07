@@ -72,7 +72,7 @@ class Head(nn.Module):
         query = self.query(x)  # (B,T,hs)
         # compute attention scores ("affinities")
         key = rearrange(key, "batch_size seq_len dim -> batch_size dim seq_len")
-        wei = jnp.matmul(query, key) * jnp.sqrt(self.head_size)  # (B, T, T)
+        wei = jnp.matmul(query, key) * (1 / jnp.sqrt(self.head_size))  # (B, T, T)
         wei = jnp.where(self.tril[:T, :T] == 0, jnp.full((T, T), -1e9), wei)  # (B, T, T)
         wei = nn.softmax(wei, axis=-1)  # (B, T, T)
         wei = self.dropout(wei, deterministic)
@@ -191,7 +191,8 @@ class GPTLanguageModel(nn.Module):
         return logits
 
 
-def generate(model: nn.Module, params: FrozenVariableDict, idx: jnp.ndarray, max_new_tokens: int):
+def generate(model: GPTLanguageModel, params: FrozenVariableDict, idx: jnp.ndarray, max_new_tokens: int):
+    model.deterministic = True
     # idx is (B, T) array of indices in the current context
     key = jax.random.PRNGKey(4223)
 
@@ -214,6 +215,8 @@ def generate(model: nn.Module, params: FrozenVariableDict, idx: jnp.ndarray, max
 
         # append sampled index to the running sequence
         idx = jnp.concatenate([idx, idx_next], axis=1)  # (B, T+1)
+
+    model.deterministic = False
     return idx
 
 
@@ -336,21 +339,16 @@ def get_model_n_params(
     # create model
     gpt = GPTLanguageModel(vocab_size, n_embd, block_size, n_layer, n_head, dropout, deterministic)
 
-    if not for_validation:
-        # get params
-        x, _ = get_batch("train", data_dict, block_size, batch_size)
-        params = gpt.init(rngs, x)
+    x, _ = get_batch("train", data_dict, block_size, batch_size)
+    params = gpt.init(rngs, x)
 
-        return gpt, params, dropout_rng
-
-    else:
-        return gpt
+    return gpt, params, dropout_rng
 
 
 # hyperparameters
-batch_size = 64
+batch_size = 128
 block_size = 256
-max_iters = 5000
+max_iters = 50000
 eval_interval = 500
 learning_rate = 3e-4
 eval_iters = 20
