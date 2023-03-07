@@ -1,30 +1,28 @@
 import csv
 import logging
-from typing import Dict, Optional, Tuple, Callable, Union, Any
+from dataclasses import dataclass, asdict
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
+import mlflow
 import jax
 import jax.numpy as jnp
-from jax import lax, jit
-
 import numpy as np
 import optax
 import torch
-
 from einops import rearrange
-
 from flax import jax_utils
 from flax import linen as nn
 from flax.core.scope import FrozenVariableDict
 from flax.training.train_state import TrainState
-
 from histr import Shabdansh
-
+from jax import lax
 from jax_smi import initialise_tracking
 
 from mingpt.train import GraphemeVocab
 
 MAX_FIELD_SIZE = 100000000  # 100 MB
 EXPERIMENT_LABEL = "test_run_3"
+mlflow.set_experiment("PremchandGPT")
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -46,6 +44,21 @@ console_handler.setFormatter(formatter)
 # Add handlers to logger
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
+
+
+@dataclass
+class ModelConfig:
+    vocab_size: int
+    batch_size: int = 128
+    block_size: int = 256
+    max_iters: int = 50000
+    eval_interval: int = 500
+    learning_rate: float = 3e-4
+    eval_iters: int = 20
+    n_embd: int = 384
+    n_head: int = 6
+    n_layer: int = 12
+    dropout: float = 0.2
 
 
 class Head(nn.Module):
@@ -191,13 +204,15 @@ class GPTLanguageModel(nn.Module):
         return logits
 
 
-def generate(model: GPTLanguageModel, params: FrozenVariableDict, idx: jnp.ndarray, max_new_tokens: int):
+def generate(
+    idx: jnp.ndarray, model: GPTLanguageModel, params: FrozenVariableDict, config: ModelConfig, max_new_tokens: int
+):
     model.deterministic = True
     # idx is (B, T) array of indices in the current context
     key = jax.random.PRNGKey(4223)
 
     for i in range(max_new_tokens):
-        idx_cond = idx[:, -block_size:]
+        idx_cond = idx[:, -config.block_size :]
 
         # get the predictions
         logits = model.apply(params, idx_cond, rngs={"dropout": dropout_rng})
@@ -220,7 +235,7 @@ def generate(model: GPTLanguageModel, params: FrozenVariableDict, idx: jnp.ndarr
     return idx
 
 
-def estimate_loss(data_dict, model: GPTLanguageModel, params, dropout_rng, eval_iters):
+def estimate_loss(data_dict, model: GPTLanguageModel, params, dropout_rng, config: ModelConfig):
     def loss_fn(model: GPTLanguageModel, params, inputs, labels):
         logits = model.apply(params, inputs, rngs={"dropout": dropout_rng})
         B, T, C = logits.shape
@@ -233,9 +248,9 @@ def estimate_loss(data_dict, model: GPTLanguageModel, params, dropout_rng, eval_
     out = {}
     model.deterministic = True
     for split in ["train", "validation"]:
-        losses = np.zeros(eval_iters)
-        for k in range(eval_iters):
-            X, Y = get_batch(split, data_dict, block_size, batch_size, for_pmap=False)
+        losses = np.zeros(config.eval_iters)
+        for k in range(config.eval_iters):
+            X, Y = get_batch(split, data_dict, config.block_size, config.batch_size, for_pmap=False)
             loss = loss_fn(model, params, X, Y)
             losses[k] = loss
         out[split] = losses.mean()
@@ -318,14 +333,8 @@ def get_encoder_decoder(vocab: GraphemeVocab) -> Tuple[Callable, Callable]:
 
 
 def get_model_n_params(
-    vocab_size: int,
-    n_embd: int,
-    block_size: int,
-    n_layer: int,
-    n_head: int,
-    dropout: float,
+    config: ModelConfig,
     data_dict: Dict[str, torch.tensor],
-    batch_size: int,
     for_validation: bool = False,
 ) -> Union[Tuple[GPTLanguageModel, FrozenVariableDict, Any], GPTLanguageModel]:
     # prepare rngs
@@ -337,69 +346,71 @@ def get_model_n_params(
     deterministic = for_validation
 
     # create model
-    gpt = GPTLanguageModel(vocab_size, n_embd, block_size, n_layer, n_head, dropout, deterministic)
+    gpt = GPTLanguageModel(
+        config.vocab_size,
+        config.n_embd,
+        config.block_size,
+        config.n_layer,
+        config.n_head,
+        config.dropout,
+        deterministic,
+    )
 
-    x, _ = get_batch("train", data_dict, block_size, batch_size)
+    x, _ = get_batch("train", data_dict, config.block_size, config.batch_size)
     params = gpt.init(rngs, x)
 
     return gpt, params, dropout_rng
 
 
-# hyperparameters
-batch_size = 128
-block_size = 256
-max_iters = 50000
-eval_interval = 500
-learning_rate = 3e-4
-eval_iters = 20
-n_embd = 384
-n_head = 6
-n_layer = 12
-dropout = 0.2
-
+# load data
 text, vocab = load_data("/home/khandelia1000/premchand/data/premchand.tsv")
 vocab_size = len(vocab.stoi)
 
+# get model and training config
+config = ModelConfig(vocab_size)
+
+# get tokenizer
 encode, decode = get_encoder_decoder(vocab)
 
+# tokenize data
 data_dict = get_data_dict(text, encode)
 
+# instansiate the model and get params
 initialise_tracking()
-# Initialize the parameters of the module
-gpt, params, dropout_rng = get_model_n_params(
-    vocab_size,
-    n_embd,
-    block_size,
-    n_layer,
-    n_head,
-    dropout,
-    data_dict,
-    batch_size,
-)
+gpt, params, dropout_rng = get_model_n_params(config, data_dict)
 max_new_tokens = 10
 
 parameter_count = sum(x.size for x in jax.tree_util.tree_leaves(params)) / 1e6
 logger.info(f"Number of parameters (in millions): {parameter_count}")
 
 
-state = TrainState.create(apply_fn=gpt.apply, params=params, tx=optax.adamw(learning_rate))
+state = TrainState.create(apply_fn=gpt.apply, params=params, tx=optax.adamw(config.learning_rate))
 state = jax_utils.replicate(state)
 
 p_update = jax.pmap(update, axis_name="batch")
-for iter in range(max_iters):
-    # sample a batch of data
-    xb, yb = get_batch("train", data_dict, block_size, batch_size, for_pmap=True)
 
-    # evaluate the loss
-    loss, state = p_update(state, xb, yb)
+with mlflow.start_run():
+    mlflow.log_params(asdict(config))
+    for iter in range(config.max_iters):
+        # sample a batch of data
+        xb, yb = get_batch("train", data_dict, config.block_size, config.batch_size, for_pmap=True)
 
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        logger.info(estimate_loss(data_dict, gpt, jax_utils.unreplicate(state).params, dropout_rng, eval_iters))
-        logger.info(f"step {iter}: train loss {jnp.mean(loss):.4f}")
-        context = jnp.zeros((1, 1), dtype=jnp.int32)
-        logger.info(
-            decode(
-                generate(gpt, jax_utils.unreplicate(state).params, context, max_new_tokens=max_new_tokens)[0].tolist()
+        # evaluate the loss
+        loss, state = p_update(state, xb, yb)
+        mlflow.log_metric("training loss", loss, iter)
+
+        # every once in a while evaluate the loss on train and val sets
+        if iter % config.eval_interval == 0 or iter == config.max_iters - 1:
+            losses = estimate_loss(data_dict, gpt, jax_utils.unreplicate(state).params, dropout_rng, config)
+            logger.info(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+            mlflow.log_metric("validation loss", losses["val"], iter)
+
+            context = jnp.zeros((1, 1), dtype=jnp.int32)
+            generated_text = decode(
+                generate(context, gpt, jax_utils.unreplicate(state).params, config, max_new_tokens=max_new_tokens)[
+                    0
+                ].tolist()
             )
-        )
+            mlflow.log_text(generated_text, "samples.txt")
+            logger.info(generated_text)
