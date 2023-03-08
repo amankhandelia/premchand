@@ -397,14 +397,14 @@ with mlflow.start_run():
 
         # evaluate the loss
         loss, state = p_update(state, xb, yb)
-        mlflow.log_metric("training loss", loss, iter)
+        mlflow.log_metric("training loss", float(jnp.mean(loss)), iter)
 
         # every once in a while evaluate the loss on train and val sets
         if iter % config.eval_interval == 0 or iter == config.max_iters - 1:
             losses = estimate_loss(data_dict, gpt, jax_utils.unreplicate(state).params, dropout_rng, config)
-            logger.info(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            logger.info(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['validation']:.4f}")
 
-            mlflow.log_metric("validation loss", losses["val"], iter)
+            mlflow.log_metric("validation loss", losses["validation"], iter)
 
             context = jnp.zeros((1, 1), dtype=jnp.int32)
             generated_text = decode(
