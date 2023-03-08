@@ -1,22 +1,28 @@
 import csv
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import mlflow
-import jax
-import jax.numpy as jnp
-import numpy as np
 import optax
 import torch
-from einops import rearrange
+
+import jax.numpy as jnp
+import numpy as np
+
+import jax
+from jax import lax
+
 from flax import jax_utils
 from flax import linen as nn
 from flax.core.scope import FrozenVariableDict
 from flax.training.train_state import TrainState
-from histr import Shabdansh
-from jax import lax
+
+from einops import rearrange
+
 from jax_smi import initialise_tracking
+
+from histr import Shabdansh
 
 from mingpt.train import GraphemeVocab
 
@@ -326,8 +332,12 @@ def get_encoder_decoder(vocab: GraphemeVocab) -> Tuple[Callable, Callable]:
     # create a mapping from characters to integers
     stoi = vocab.stoi
     itos = vocab.itos
-    encode = lambda s: [stoi[c] for c in Shabdansh(s)]  # encoder: take a string, output a list of integers
-    decode = lambda l: "".join([itos[i] for i in l])  # decoder: take a list of integers, output a string
+
+    def encode(s):
+        return [stoi[c] for c in Shabdansh(s)]  # encoder: take a string, output a list of integers
+
+    def decode(l):
+        return "".join([itos[i] for i in l])  # decoder: take a list of integers, output a string
 
     return encode, decode
 
