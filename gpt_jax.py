@@ -53,18 +53,28 @@ logger.addHandler(console_handler)
 
 
 @dataclass
-class ModelConfig:
+class ModelArchConfig:
     vocab_size: int
-    batch_size: int = 128
-    block_size: int = 256
-    max_iters: int = 50000
-    eval_interval: int = 500
-    learning_rate: float = 3e-4
-    eval_iters: int = 20
-    n_embd: int = 384
+    n_embd: int = 512
     n_head: int = 6
     n_layer: int = 12
     dropout: float = 0.2
+    block_size: int = 256
+
+
+@dataclass
+class TrainingConfig:
+    batch_size: int = 128
+    max_iters: int = 5000
+    eval_interval: int = 500
+    learning_rate: float = 3e-4
+    eval_iters: int = 20
+
+
+@dataclass
+class ModelConfig:
+    arch: ModelArchConfig
+    training: TrainingConfig
 
 
 class Head(nn.Module):
@@ -218,7 +228,7 @@ def generate(
     key = jax.random.PRNGKey(4223)
 
     for i in range(max_new_tokens):
-        idx_cond = idx[:, -config.block_size :]
+        idx_cond = idx[:, -config.arch.block_size :]
 
         # get the predictions
         logits = model.apply(params, idx_cond, rngs={"dropout": dropout_rng})
@@ -254,9 +264,9 @@ def estimate_loss(data_dict, model: GPTLanguageModel, params, dropout_rng, confi
     out = {}
     model.deterministic = True
     for split in ["train", "validation"]:
-        losses = np.zeros(config.eval_iters)
-        for k in range(config.eval_iters):
-            X, Y = get_batch(split, data_dict, config.block_size, config.batch_size, for_pmap=False)
+        losses = np.zeros(config.training.eval_iters)
+        for k in range(config.training.eval_iters):
+            X, Y = get_batch(split, data_dict, config.arch.block_size, config.training.batch_size, for_pmap=False)
             loss = loss_fn(model, params, X, Y)
             losses[k] = loss
         out[split] = losses.mean()
@@ -357,16 +367,16 @@ def get_model_n_params(
 
     # create model
     gpt = GPTLanguageModel(
-        config.vocab_size,
-        config.n_embd,
-        config.block_size,
-        config.n_layer,
-        config.n_head,
-        config.dropout,
+        config.arch.vocab_size,
+        config.arch.n_embd,
+        config.arch.block_size,
+        config.arch.n_layer,
+        config.arch.n_head,
+        config.arch.dropout,
         deterministic,
     )
 
-    x, _ = get_batch("train", data_dict, config.block_size, config.batch_size)
+    x, _ = get_batch("train", data_dict, config.arch.block_size, config.training.batch_size)
     params = gpt.init(rngs, x)
 
     return gpt, params, dropout_rng
@@ -377,7 +387,9 @@ text, vocab = load_data("/home/khandelia1000/premchand/data/premchand.tsv")
 vocab_size = len(vocab.stoi)
 
 # get model and training config
-config = ModelConfig(vocab_size)
+arch_config = ModelArchConfig(vocab_size)
+training_config = TrainingConfig()
+config = ModelConfig(arch_config, training_config)
 
 # get tokenizer
 encode, decode = get_encoder_decoder(vocab)
@@ -394,23 +406,24 @@ parameter_count = sum(x.size for x in jax.tree_util.tree_leaves(params)) / 1e6
 logger.info(f"Number of parameters (in millions): {parameter_count}")
 
 
-state = TrainState.create(apply_fn=gpt.apply, params=params, tx=optax.adamw(config.learning_rate))
+state = TrainState.create(apply_fn=gpt.apply, params=params, tx=optax.adamw(config.training.learning_rate))
 state = jax_utils.replicate(state)
 
 p_update = jax.pmap(update, axis_name="batch")
 
 with mlflow.start_run():
-    mlflow.log_params(asdict(config))
-    for iter in range(config.max_iters):
+    mlflow.log_params(asdict(config.arch))
+    mlflow.log_params(asdict(config.training))
+    for iter in range(config.training.max_iters):
         # sample a batch of data
-        xb, yb = get_batch("train", data_dict, config.block_size, config.batch_size, for_pmap=True)
+        xb, yb = get_batch("train", data_dict, config.arch.block_size, config.training.batch_size, for_pmap=True)
 
         # evaluate the loss
         loss, state = p_update(state, xb, yb)
         mlflow.log_metric("training loss", float(jnp.mean(loss)), iter)
 
         # every once in a while evaluate the loss on train and val sets
-        if iter % config.eval_interval == 0 or iter == config.max_iters - 1:
+        if iter % config.training.eval_interval == 0 or iter == config.training.max_iters - 1:
             losses = estimate_loss(data_dict, gpt, jax_utils.unreplicate(state).params, dropout_rng, config)
             logger.info(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['validation']:.4f}")
 
