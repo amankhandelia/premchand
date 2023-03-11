@@ -1,4 +1,4 @@
-import csv
+import json
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, Optional, Tuple, Union
@@ -17,6 +17,7 @@ from flax import jax_utils
 from flax import linen as nn
 from flax.core.scope import FrozenVariableDict
 from flax.training.train_state import TrainState
+from flax.serialization import msgpack_serialize
 
 from einops import rearrange
 
@@ -27,8 +28,8 @@ from histr import Shabdansh
 from mingpt.train import GraphemeVocab
 
 MAX_FIELD_SIZE = 100000000  # 100 MB
-EXPERIMENT_LABEL = "test_run_3"
-mlflow.set_experiment("PremchandGPT")
+EXPERIMENT_LABEL = "samachaar_gpt_1"
+mlflow.set_experiment("SamachaarGPT")
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ class ModelArchConfig:
     vocab_size: int
     n_embd: int = 512
     n_head: int = 6
-    n_layer: int = 12
+    n_layer: int = 14
     dropout: float = 0.2
     block_size: int = 256
 
@@ -65,7 +66,7 @@ class ModelArchConfig:
 @dataclass
 class TrainingConfig:
     batch_size: int = 128
-    max_iters: int = 5000
+    max_iters: int = 50000
     eval_interval: int = 500
     learning_rate: float = 3e-4
     eval_iters: int = 20
@@ -295,13 +296,10 @@ def update(state: TrainState, inputs, labels, seed: int = 100):
 
 
 def load_data(data_path: str) -> Tuple[str, GraphemeVocab]:
-    csv.field_size_limit(MAX_FIELD_SIZE)
-    with open(data_path, "r") as tsv_file:
-        reader = csv.DictReader(tsv_file, delimiter="\t")
-        stories = [row["Text"] for row in reader]
+    articles = open(data_path, "r").readlines()
     vocab = GraphemeVocab()
-    vocab.build_vocab(stories)
-    return " ".join(stories), vocab
+    vocab.build_vocab(articles)
+    return " ".join(articles), vocab
 
 
 def get_batch(split, data: Dict[str, torch.tensor], block_size: int, batch_size: int, for_pmap: bool = False):
@@ -382,8 +380,18 @@ def get_model_n_params(
     return gpt, params, dropout_rng
 
 
+def save_trained_params(params, file):
+    with open(file, "wb+") as f:
+        serialized = msgpack_serialize(params.unfreeze())
+        f.write(serialized)
+    print(f"Saved successfully to {file}")
+
+
 # load data
-text, vocab = load_data("/home/khandelia1000/premchand/data/premchand.tsv")
+text, vocab = load_data("/home/khandelia1000/premchand/data/July/rp_articles.txt")
+with open("data_file.json", "w") as outfile:
+    json.dump(vocab.stoi, outfile)
+
 vocab_size = len(vocab.stoi)
 
 # get model and training config
@@ -396,6 +404,7 @@ encode, decode = get_encoder_decoder(vocab)
 
 # tokenize data
 data_dict = get_data_dict(text, encode)
+token_count = len(data_dict["train"])
 
 # instansiate the model and get params
 initialise_tracking()
@@ -411,9 +420,13 @@ state = jax_utils.replicate(state)
 
 p_update = jax.pmap(update, axis_name="batch")
 
+best_val_loss = float("inf")
+
 with mlflow.start_run():
     mlflow.log_params(asdict(config.arch))
     mlflow.log_params(asdict(config.training))
+    mlflow.log_param("token_count", token_count)
+    mlflow.log_param("vocab_size", vocab_size)
     for iter in range(config.training.max_iters):
         # sample a batch of data
         xb, yb = get_batch("train", data_dict, config.arch.block_size, config.training.batch_size, for_pmap=True)
@@ -428,12 +441,13 @@ with mlflow.start_run():
             logger.info(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['validation']:.4f}")
 
             mlflow.log_metric("validation loss", losses["validation"], iter)
+            params = jax_utils.unreplicate(state).params
+            if losses["validation"] < best_val_loss:
+                best_val_loss = losses["validation"]
+                save_trained_params(params, "samachaargpt.msgpack")
+                logger.info(f"Updated model at samachaargpt.msgpack with validation loss: {losses['validation']:.4f}")
 
             context = jnp.zeros((1, 1), dtype=jnp.int32)
-            generated_text = decode(
-                generate(context, gpt, jax_utils.unreplicate(state).params, config, max_new_tokens=max_new_tokens)[
-                    0
-                ].tolist()
-            )
+            generated_text = decode(generate(context, gpt, params, config, max_new_tokens=max_new_tokens)[0].tolist())
             mlflow.log_text(generated_text, "samples.txt")
             logger.info(generated_text)
