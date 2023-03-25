@@ -7,3 +7,5 @@ tensorboardX
 scipy
 histr
 einops
+mlflow
+loguru
