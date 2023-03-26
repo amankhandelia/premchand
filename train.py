@@ -71,7 +71,7 @@ logger.info(f"Number of parameters (in millions): {parameter_count}")
 state = TrainState.create(apply_fn=gpt.apply, params=params, tx=optax.adamw(config.training.learning_rate))
 state = jax_utils.replicate(state)
 
-p_update = jax.pmap(update, axis_name="batch")
+p_update = jax.pmap(update, axis_name="batch", static_broadcasted_argnums=(3,))
 
 best_val_loss = float("inf")
 
@@ -82,31 +82,32 @@ with mlflow.start_run():
     mlflow.log_param("vocab_size", tokenizer.vocab_size)
     batch_count = 0
     for epoch in range(config.training.epoch_count):
+        logger.info(f"Epoch: {epoch}")
         for i, (x, y) in enumerate(train_dataloader):
-            
+            logger.info(f"Batch Count: {batch_count}")
             # sample a batch of data
-            x = jnp.asarray(x)
-            y = jnp.asarray(y)
+            x, y = jnp.asarray(x), jnp.asarray(y)
 
             # evaluate the loss
-            loss, state = p_update(state, x, y)
+            loss, state = p_update(state, x, y, tokenizer.pad_token_id)
+            logger.info(f"training loss at step {batch_count}: {float(jnp.mean(loss))}")
             mlflow.log_metric("training loss", float(jnp.mean(loss)), batch_count)
 
             # every once in a while evaluate the loss on train and val sets
-            if batch_count % config.training.eval_interval == 0 or batch_count == config.training.max_iters - 1:
-                losses = estimate_loss(val_dataloader, jax_utils.unreplicate(state).params, dropout_rng, config)
-                logger.info(f"step {batch_count}: train loss {losses['train']:.4f}, val loss {losses['validation']:.4f}")
+            if batch_count % config.training.eval_interval == 0:
+                losses = estimate_loss(val_dataloader, gpt, jax_utils.unreplicate(state).params, dropout_rng, config)
+                logger.info(f"step {batch_count}: val loss {losses:.4f}")
 
-                mlflow.log_metric("validation loss", losses["validation"], batch_count)
-                params = jax_utils.unreplicate(state).params
-                if losses["validation"] < best_val_loss:
-                    best_val_loss = losses["validation"]
-                    save_trained_params(params, "samachaargpt.msgpack")
-                    logger.info(f"Updated model at samachaargpt.msgpack with validation loss: {losses['validation']:.4f}")
+                # mlflow.log_metric("validation loss", losses["validation"], batch_count)
+                # params = jax_utils.unreplicate(state).params
+                # if losses["validation"] < best_val_loss:
+                #     best_val_loss = losses["validation"]
+                #     save_trained_params(params, "samachaargpt.msgpack")
+                #     logger.info(f"Updated model at samachaargpt.msgpack with validation loss: {losses['validation']:.4f}")
 
-                context = jnp.zeros((1, 1), dtype=jnp.int32)
-                generated_text = decode(generate(context, gpt, params, config, max_new_tokens=max_new_tokens)[0].tolist())
-                mlflow.log_text(generated_text, "samples.txt")
-                logger.info(generated_text)
+                # context = jnp.zeros((1, 1), dtype=jnp.int32)
+                # generated_text = decode(generate(context, gpt, params, config, max_new_tokens=max_new_tokens)[0].tolist())
+                # mlflow.log_text(generated_text, "samples.txt")
+                # logger.info(generated_text)
             
             batch_count += 1
