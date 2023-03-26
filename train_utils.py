@@ -18,11 +18,10 @@ from torch.utils.data import DataLoader
 
 from mingpt.gpt import GPTLanguageModel
 from mingpt.config import ModelConfig
-from data_utils import get_batch
 
 
 def estimate_loss(dataloader: DataLoader, model: GPTLanguageModel, params, dropout_rng, config: ModelConfig):
-    def loss_fn(model: GPTLanguageModel, params, inputs, labels):
+    def loss_fn(params, inputs, labels):
         logits = model.apply(params, inputs, rngs={"dropout": dropout_rng})
         B, T, C = logits.shape
         labels = labels.reshape(B * T)
@@ -34,16 +33,16 @@ def estimate_loss(dataloader: DataLoader, model: GPTLanguageModel, params, dropo
     model.deterministic = True
     losses = np.zeros(config.training.eval_iters)
     for k, (X, Y) in enumerate(dataloader):
-        loss = loss_fn(model, params, X, Y)
-        losses[k] = loss
-        if not (k < config.training.eval_iters):
+        if k >= config.training.eval_iters:
             break
+        loss = loss_fn(params, X, Y)
+        losses[k] = loss
 
     model.deterministic = False
     return losses.mean()
 
 
-def update(state: TrainState, inputs, labels, seed: int = 100):
+def update(state: TrainState, inputs, labels, pad_token_id, seed: int = 100):
     dropout_rng = jax.random.PRNGKey(seed)
 
     def loss_fn(params, labels):
@@ -53,7 +52,17 @@ def update(state: TrainState, inputs, labels, seed: int = 100):
         logits = logits.reshape(B * T, C)
 
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
-        return jnp.mean(loss)
+        
+        # Create a mask for non-pad tokens
+        non_pad_mask = jnp.not_equal(labels, pad_token_id)
+
+        # Apply the mask to the loss values
+        masked_loss = loss * non_pad_mask
+
+        # Calculate the mean loss only for non-pad tokens
+        mean_loss = jnp.sum(masked_loss) / jnp.sum(non_pad_mask)
+
+        return mean_loss
 
     val_n_grad = jax.value_and_grad(loss_fn)
     loss, grads = val_n_grad(state.params, labels)
@@ -87,7 +96,7 @@ def get_model_n_params(
         deterministic,
     )
 
-    x = jnp.zeros(input_shape)
+    x = jnp.zeros(input_shape, dtype=jnp.int32)
     params = gpt.init(rngs, x)
 
     return gpt, params, dropout_rng
