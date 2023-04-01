@@ -13,7 +13,7 @@ class ModelArchConfig:
 
 @dataclass
 class TrainingConfig:
-    batch_size: int = 128
+    batch_size: int = 64
     epoch_count: int = 10
     learning_rate: float = 3e-4
     eval_iters: int = 20

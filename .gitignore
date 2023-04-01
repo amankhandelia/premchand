@@ -7,3 +7,5 @@ __pycache__
 mlruns
 *.log
 .venv310
+notebooks
+.vscode

@@ -20,7 +20,9 @@ from mingpt.gpt import GPTLanguageModel
 from mingpt.config import ModelConfig
 
 
-def estimate_loss(dataloader: DataLoader, model: GPTLanguageModel, params, dropout_rng, config: ModelConfig):
+def estimate_loss(
+    dataloader: DataLoader, model: GPTLanguageModel, params, pad_token_id, dropout_rng, config: ModelConfig
+):
     def loss_fn(params, inputs, labels):
         logits = model.apply(params, inputs, rngs={"dropout": dropout_rng})
         B, T, C = logits.shape
@@ -28,7 +30,17 @@ def estimate_loss(dataloader: DataLoader, model: GPTLanguageModel, params, dropo
         logits = logits.reshape(B * T, C)
 
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
-        return jnp.mean(loss)
+
+        # Create a mask for non-pad tokens
+        non_pad_mask = jnp.not_equal(labels, pad_token_id)
+
+        # Apply the mask to the loss values
+        masked_loss = loss * non_pad_mask
+
+        # Calculate the mean loss only for non-pad tokens
+        mean_loss = jnp.sum(masked_loss) / jnp.sum(non_pad_mask)
+
+        return mean_loss
 
     model.deterministic = True
     losses = np.zeros(config.training.eval_iters)
@@ -52,7 +64,7 @@ def update(state: TrainState, inputs, labels, pad_token_id, seed: int = 100):
         logits = logits.reshape(B * T, C)
 
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
-        
+
         # Create a mask for non-pad tokens
         non_pad_mask = jnp.not_equal(labels, pad_token_id)
 
