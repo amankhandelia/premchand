@@ -14,9 +14,8 @@ from jax_smi import initialise_tracking
 
 from loguru import logger
 
-from mingpt.config import ModelConfig, ModelArchConfig, TrainingConfig
+from mingpt.config import load_config
 from mingpt.dataset import DesiDataset, collate_fn
-from data_utils import generate
 from train_utils import get_model_n_params, update, estimate_loss, save_trained_params
 
 from datasets import load_dataset
@@ -38,12 +37,11 @@ tokenizer = Tokenizer.from_file("samachaar_tokenizer")
 tokenizer.pad_token_id = tokenizer.token_to_id("<PAD>")
 
 # Get model and training config
-arch_config = ModelArchConfig(tokenizer.get_vocab_size())
-training_config = TrainingConfig()
-config = ModelConfig(arch_config, training_config)
+config = load_config()
+config.arch.vocab_size = tokenizer.get_vocab_size()
 
 # Create the custom dataset
-dataset = DesiDataset(dataset, tokenizer, arch_config.block_size)
+dataset = DesiDataset(dataset, tokenizer, config.arch.block_size)
 # Calculate the sizes of the training and validation sets
 dataset_size = len(dataset)
 train_size = int(0.8 * dataset_size)
@@ -57,20 +55,20 @@ train_dataloader = DataLoader(
     train_dataset,
     batch_size=config.training.batch_size,
     shuffle=True,
-    collate_fn=lambda b: collate_fn(b, tokenizer, arch_config.block_size, True),
+    collate_fn=lambda b: collate_fn(b, tokenizer, config.arch.block_size, True),
     num_workers=16,
 )
 val_dataloader = DataLoader(
     val_dataset,
     batch_size=16,
     shuffle=True,
-    collate_fn=lambda b: collate_fn(b, tokenizer, arch_config.block_size),
+    collate_fn=lambda b: collate_fn(b, tokenizer, config.arch.block_size),
 )
 
 
 # instansiate the model and get params
 initialise_tracking()
-gpt, params, dropout_rng = get_model_n_params(config, (2, arch_config.block_size))
+gpt, params, dropout_rng = get_model_n_params(config, (2, config.arch.block_size))
 max_new_tokens = 10
 
 parameter_count = sum(x.size for x in jax.tree_util.tree_leaves(params)) / 1e6
@@ -85,8 +83,8 @@ p_update = jax.pmap(update, axis_name="batch", static_broadcasted_argnums=(3,))
 best_val_loss = float("inf")
 
 with mlflow.start_run():
-    mlflow.log_params(asdict(config.arch))
-    mlflow.log_params(asdict(config.training))
+    mlflow.log_params(config.arch.dict())
+    mlflow.log_params(config.training.dict())
     mlflow.log_param("vocab_size", config.arch.vocab_size)
     batch_count = 0
     for epoch in range(config.training.epoch_count):

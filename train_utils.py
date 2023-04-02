@@ -11,7 +11,8 @@ from jax import lax
 
 
 from flax.training.train_state import TrainState
-from flax.serialization import msgpack_serialize
+from flax.serialization import msgpack_serialize, msgpack_restore
+from flax.core import freeze
 from flax.core.scope import FrozenVariableDict
 
 from torch.utils.data import DataLoader
@@ -119,3 +120,12 @@ def save_trained_params(params, file):
         serialized = msgpack_serialize(params.unfreeze())
         f.write(serialized)
     print(f"Saved successfully to {file}")
+
+
+def load_trained_params(file):
+    with open(file, "rb") as f:
+        content = f.read()
+        restored_params = msgpack_restore(content)
+        restored_params = freeze(restored_params)
+
+    return restored_params

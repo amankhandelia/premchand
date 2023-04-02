@@ -9,3 +9,4 @@ histr
 einops
 mlflow
 loguru
+pydantic[dotenv]
