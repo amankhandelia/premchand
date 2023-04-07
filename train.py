@@ -1,4 +1,4 @@
-from dataclasses import asdict
+import os
 
 import mlflow
 import optax
@@ -23,8 +23,9 @@ from tokenizers import Tokenizer
 
 from torch.utils.data import DataLoader, random_split
 
-EXPERIMENT_LABEL = "samachaar_gpt_1"
 mlflow.set_experiment("SamachaarGPT")
+mlflow.set_tracking_uri("mlruns")
+model_directory = "path/to/model_directory"
 
 logger.add("experiment.log", level="INFO", format="{time} {level} {message}")
 
@@ -82,7 +83,8 @@ p_update = jax.pmap(update, axis_name="batch", static_broadcasted_argnums=(3,))
 
 best_val_loss = float("inf")
 
-with mlflow.start_run():
+with mlflow.start_run() as run:
+    run_name = run.info.run_name
     mlflow.log_params(config.arch.dict())
     mlflow.log_params(config.training.dict())
     mlflow.log_param("vocab_size", config.arch.vocab_size)
@@ -116,8 +118,10 @@ with mlflow.start_run():
                 params = jax_utils.unreplicate(state).params
                 if losses < best_val_loss:
                     best_val_loss = losses
-                    save_trained_params(params, "samachaargpt.msgpack")
-                    logger.info(f"Updated model at samachaargpt.msgpack with validation loss: {losses:.4f}")
+                    model_path = f"{model_directory}/{run_name}/samachaargpt.msgpack"
+                    os.makedirs(f"{model_directory}/{run_name}/")
+                    save_trained_params(params, model_path)
+                    logger.info(f"Updated model at {model_path} with validation loss: {losses:.4f}")
 
                 # context = jnp.zeros((1, 1), dtype=jnp.int32)
                 # generated_text = decode(generate(context, gpt, params, config, max_new_tokens=max_new_tokens)[0].tolist())
