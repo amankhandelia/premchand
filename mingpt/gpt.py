@@ -2,41 +2,6 @@ from typing import Optional
 
 from flax import linen as nn
 import jax.numpy as jnp
-from einops import rearrange
-
-
-class Head(nn.Module):
-    """one head of self-attention"""
-
-    head_size: int
-    dropout_rate: float
-    block_size: int
-    deterministic: Optional[bool] = None
-
-    def setup(self):
-        self.key = nn.Dense(self.head_size, use_bias=False)
-        self.query = nn.Dense(self.head_size, use_bias=False)
-        self.value = nn.Dense(self.head_size, use_bias=False)
-        self.dropout = nn.Dropout(rate=self.dropout_rate)
-        self.tril = jnp.tril(jnp.ones((self.block_size, self.block_size)))
-
-    def __call__(self, x, deterministic: Optional[bool] = None):
-        deterministic = nn.merge_param("deterministic", self.deterministic, deterministic)
-        # input of size (batch, time-step, channels)
-        # output of size (batch, time-step, head size)
-        _, T, _ = x.shape
-        key = self.key(x)  # (B,T,hs)
-        query = self.query(x)  # (B,T,hs)
-        # compute attention scores ("affinities")
-        key = rearrange(key, "batch_size seq_len dim -> batch_size dim seq_len")
-        wei = jnp.matmul(query, key) * (1 / jnp.sqrt(self.head_size))  # (B, T, T)
-        wei = jnp.where(self.tril[:T, :T] == 0, jnp.full((T, T), -1e9), wei)  # (B, T, T)
-        wei = nn.softmax(wei, axis=-1)  # (B, T, T)
-        wei = self.dropout(wei, deterministic)
-        # perform the weighted aggregation of the values
-        v = self.value(x)  # (B,T,hs)
-        out = jnp.matmul(wei, v)  # (B, T, T) @ (B, T, hs) -> (B, T, hs)
-        return out
 
 
 class MultiHeadAttention(nn.Module):
@@ -50,17 +15,46 @@ class MultiHeadAttention(nn.Module):
     deterministic: Optional[bool] = None
 
     def setup(self):
-        self.heads = [
-            Head(self.head_size, self.dropout_rate, self.block_size, self.deterministic) for _ in range(self.num_heads)
-        ]
+        self.key_projection = nn.Dense(self.n_embd, use_bias=False)
+        self.query_projection = nn.Dense(self.n_embd, use_bias=False)
+        self.value_projection = nn.Dense(self.n_embd, use_bias=False)
+        self.dropout = nn.Dropout(rate=self.dropout_rate)
+        self.tril = jnp.tril(jnp.ones((self.block_size, self.block_size)))
         self.proj = nn.Dense(self.n_embd, use_bias=True)
         self.dropout_layer = nn.Dropout(rate=self.dropout_rate)
+
+    def _split_heads(self, x):
+        return x.reshape(x.shape[:2] + (self.num_heads, self.head_size))
+
+    def _merge_heads(self, x):
+        return x.reshape(x.shape[:2] + (self.n_embd,))
 
     def __call__(self, x, deterministic: Optional[bool] = None):
         deterministic = nn.merge_param("deterministic", self.deterministic, deterministic)
         # input of size (batch, time-step, channels)
         # output of size (batch, time-step, n_embd)
-        heads_out = jnp.concatenate([head(x) for head in self.heads], axis=-1)
+        key = self.key_projection(x)
+        query = self.query_projection(x)
+        value = self.value_projection(x)
+
+        key = self._split_heads(key)
+        query = self._split_heads(query)
+        value = self._split_heads(value)
+
+        dropout_rng = None
+        if not deterministic and self.dropout_rate > 0.0:
+            dropout_rng = self.make_rng("dropout")
+
+        heads_out = nn.dot_product_attention(
+            query,
+            key,
+            value,
+            mask=self.tril,
+            dropout_rate=self.dropout_rate,
+            dropout_rng=dropout_rng,
+            deterministic=deterministic,
+        )
+        heads_out = self._merge_heads(heads_out)
         proj_out = self.proj(heads_out)
         out = self.dropout_layer(proj_out, deterministic=deterministic)
         return out
