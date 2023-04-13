@@ -10,3 +10,4 @@ einops
 mlflow
 loguru
 pydantic[dotenv]
+memory-efficient-attention[jax]

@@ -3,6 +3,8 @@ from typing import Optional
 from flax import linen as nn
 import jax.numpy as jnp
 
+from memory_efficient_attention import efficient_dot_product_attention_jax
+
 
 class MultiHeadAttention(nn.Module):
     """multiple heads of self-attention in parallel"""
@@ -33,6 +35,8 @@ class MultiHeadAttention(nn.Module):
         deterministic = nn.merge_param("deterministic", self.deterministic, deterministic)
         # input of size (batch, time-step, channels)
         # output of size (batch, time-step, n_embd)
+        batch_size = x.shape[0]
+
         key = self.key_projection(x)
         query = self.query_projection(x)
         value = self.value_projection(x)
@@ -45,15 +49,14 @@ class MultiHeadAttention(nn.Module):
         if not deterministic and self.dropout_rate > 0.0:
             dropout_rng = self.make_rng("dropout")
 
-        heads_out = nn.dot_product_attention(
-            query,
-            key,
-            value,
-            mask=self.tril,
-            dropout_rate=self.dropout_rate,
-            dropout_rng=dropout_rng,
-            deterministic=deterministic,
-        )
+        # Repeat the array b times along the first dimension
+        mask = jnp.repeat(self.tril[jnp.newaxis, :, :], batch_size * self.num_heads, axis=0)
+
+        # Reshape the array to shape (b, h, x, x)
+        mask = mask.reshape(batch_size, self.num_heads, self.block_size, self.block_size)
+        bias = jnp.zeros(mask.shape, dtype=jnp.float32)
+
+        heads_out = efficient_dot_product_attention_jax(query, key, value, mask=mask, bias=bias)
         heads_out = self._merge_heads(heads_out)
         proj_out = self.proj(heads_out)
         out = self.dropout_layer(proj_out, deterministic=deterministic)
