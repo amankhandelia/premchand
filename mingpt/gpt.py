@@ -2,6 +2,7 @@ from typing import Optional
 
 from flax import linen as nn
 import jax.numpy as jnp
+import jax
 
 from memory_efficient_attention import efficient_dot_product_attention_jax
 
@@ -31,6 +32,30 @@ class MultiHeadAttention(nn.Module):
     def _merge_heads(self, x):
         return x.reshape(x.shape[:2] + (self.n_embd,))
 
+    @staticmethod
+    def mask_calc_fn_jax(query_offset, key_offset, mask_chunk, attn_weights, MbBb):
+        if MbBb is not None:
+            Mb, Bb = MbBb
+            return jax.lax.dynamic_slice(
+                Mb,
+                tuple([0] * (Mb.ndim - 2)) + (query_offset, key_offset),
+                slice_sizes=tuple(Mb.shape[:-2]) + (attn_weights.shape[-3], attn_weights.shape[-1]),
+            )
+        else:
+            return mask_chunk
+
+    @staticmethod
+    def bias_calc_fn_jax(query_offset, key_offset, bias_chunk, attn_weights, MbBb):
+        if MbBb is not None:
+            Mb, Bb = MbBb
+            return jax.lax.dynamic_slice(
+                Bb,
+                tuple([0] * (Bb.ndim - 2)) + (query_offset, key_offset),
+                slice_sizes=tuple(Bb.shape[:-2]) + (attn_weights.shape[-3], attn_weights.shape[-1]),
+            )
+        else:
+            return bias_chunk
+
     def __call__(self, x, deterministic: Optional[bool] = None):
         deterministic = nn.merge_param("deterministic", self.deterministic, deterministic)
         # input of size (batch, time-step, channels)
@@ -56,7 +81,15 @@ class MultiHeadAttention(nn.Module):
         mask = mask.reshape(batch_size, self.num_heads, self.block_size, self.block_size)
         bias = jnp.zeros(mask.shape, dtype=jnp.float32)
 
-        heads_out = efficient_dot_product_attention_jax(query, key, value, mask=mask, bias=bias)
+        heads_out = efficient_dot_product_attention_jax(
+            query,
+            key,
+            value,
+            # mask=mask,
+            # bias=bias,
+            # bias_calc_fn=self.bias_calc_fn_jax,
+            # mask_calc_fn=self.mask_calc_fn_jax,
+        )
         heads_out = self._merge_heads(heads_out)
         proj_out = self.proj(heads_out)
         out = self.dropout_layer(proj_out, deterministic=deterministic)
