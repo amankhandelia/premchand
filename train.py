@@ -119,7 +119,7 @@ with mlflow.start_run() as run:
                 if losses < best_val_loss:
                     best_val_loss = losses
                     model_path = f"{model_directory}/{run_name}/samachaargpt.msgpack"
-                    os.makedirs(f"{model_directory}/{run_name}/")
+                    os.makedirs(f"{model_directory}/{run_name}/", exist_ok=True)
                     save_trained_params(params, model_path)
                     logger.info(f"Updated model at {model_path} with validation loss: {losses:.4f}")
 

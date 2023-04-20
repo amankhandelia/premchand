@@ -58,10 +58,10 @@ tokenizer.add_tokens(clusters_encoded)
 tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
     [
         pre_tokenizers.Split(split_regex, behavior="isolated"),
-        pre_tokenizers.ByteLevel(add_prefix_space=True, use_regex=False),
+        pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
     ]
 )
-tokenizer.decoder = decoders.ByteLevel(add_prefix_space=True, use_regex=False)
+tokenizer.decoder = decoders.ByteLevel(add_prefix_space=False, use_regex=False)
 
 
 trainer = trainers.UnigramTrainer(
@@ -75,4 +75,4 @@ trainer = trainers.UnigramTrainer(
 batch_size = 1000000
 tokenizer.train_from_iterator(batch_iterator(dataset, batch_size), trainer=trainer, length=len(dataset))
 
-tokenizer.save("devnagari_test_tokenizer.json")
+tokenizer.save("devnagari_tokenizer.json")
