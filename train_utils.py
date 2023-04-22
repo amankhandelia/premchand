@@ -21,11 +21,12 @@ from mingpt.gpt import GPTLanguageModel
 from mingpt.config import ModelConfig
 
 
-def estimate_loss(
-    dataloader: DataLoader, model: GPTLanguageModel, params, pad_token_id, dropout_rng, config: ModelConfig
-):
-    def loss_fn(params, inputs, labels):
-        logits = model.apply(params, inputs, rngs={"dropout": dropout_rng})
+def estimate_loss(state: TrainState, inputs, labels, pad_token_id, seed: int = 100):
+    dropout_rng = jax.random.PRNGKey(seed)
+
+    # TODO: make the model determinstic for loss function
+    def loss_fn(params, labels):
+        logits = state.apply_fn(params, inputs, rngs={"dropout": dropout_rng})
         B, T, C = logits.shape
         labels = labels.reshape(B * T)
         logits = logits.reshape(B * T, C)
@@ -43,18 +44,13 @@ def estimate_loss(
 
         return mean_loss
 
-    model.deterministic = True
-    losses = np.zeros(config.training.eval_iters)
-    for k, (X, Y) in enumerate(dataloader):
-        if k >= config.training.eval_iters:
-            break
-        loss = loss_fn(params, X, Y)
-        losses[k] = loss
+    loss = loss_fn(state.params, labels)
+    loss = lax.pmean(loss, axis_name="batch")
 
-    model.deterministic = False
-    return losses.mean()
+    return loss
 
 
+@jax.jit
 def update(state: TrainState, inputs, labels, pad_token_id, seed: int = 100):
     dropout_rng = jax.random.PRNGKey(seed)
 
