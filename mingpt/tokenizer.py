@@ -4,6 +4,7 @@ from tqdm import tqdm
 from histr import Shabdansh
 
 from tokenizers import Tokenizer, decoders, models, Regex, pre_tokenizers, trainers
+from collections import Counter
 
 
 def is_devanagari(text):
@@ -16,17 +17,54 @@ def is_devanagari(text):
     return True
 
 
+def count_clusters(chunk):
+    # get count of all clusters
+    all_clusters = Counter()
+    for text in chunk["Body"]:
+        all_clusters.update(text)
+
+    # list of empty tuples to maintain the same count as map
+    counters = [[()] for _ in range(len(chunk["Body"]) - 1)]
+
+    # convert it into a list, as python objects or dict are not supported in hf dataset
+    all_clusters = [(key, str(value)) for key, value in all_clusters.items()]
+    counters.append(all_clusters)
+
+    # create a mark column to filter out the actual counters
+    mark = [0] * (len(chunk["Body"]) - 1)
+    mark.append(1)
+
+    return {"counters": counters, "mark": mark}
+
+
+def process_text(row):
+    valid_clusters = [
+        cluster
+        for cluster in set(Shabdansh(row["Body"]).str_ls)
+        if is_devanagari(cluster) and Shabdansh.is_valid_cluster(cluster)
+    ]
+    return {"Body": valid_clusters}
+
+
 def get_clusters(dataset: Dataset):
-    # Collect all the unique strings
-    all_clusters = set()
-    for row in tqdm(dataset):
-        tokens = set(Shabdansh(row["Body"]).str_ls)
-        tokens = {token for token in tokens if is_devanagari(token)}
-        all_clusters.update(tokens)
+    # convert text to list of clusters
+    dataset = dataset.map(process_text, num_proc=32)
 
-    clusters = [grapheme for grapheme in all_clusters if Shabdansh.is_valid_cluster(grapheme)]
+    # batch text in large group and count clusters
+    dataset = dataset.map(count_clusters, num_proc=32, batched=True, batch_size=10000)
 
-    return clusters
+    # filter out the rows which contain the actual count values
+    mark_column = dataset["mark"]
+    counter_indices = [idx for idx, mark in enumerate(mark_column) if mark == 1]
+    counters = dataset.select(counter_indices)
+
+    # accumulate all counters into one
+    all_clusters = Counter()
+    for row in tqdm(counters):
+        counter = Counter({key: int(value) for key, value in row["counters"]})
+        all_clusters.update(counter)
+
+    return all_clusters
 
 
 def batch_iterator(dataset: Dataset, batch_size: int):
